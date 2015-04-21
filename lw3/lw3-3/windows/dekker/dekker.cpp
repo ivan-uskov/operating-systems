@@ -3,7 +3,7 @@
 using namespace std;
 
 const int THREADCOUNT = 3;
-bool threads[THREADCOUNT] = { false, false, false };
+bool threads[THREADCOUNT];
 int turn = 0;
 
 void InitThreadsInterests()
