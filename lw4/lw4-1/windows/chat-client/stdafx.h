@@ -9,3 +9,6 @@
 #include <iostream>
 #include <exception>
 #include <string>
+#include <vector>
+
+#include "Paths.h"

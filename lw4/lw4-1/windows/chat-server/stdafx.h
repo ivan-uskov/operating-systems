@@ -2,7 +2,12 @@
 
 #include "targetver.h"
 
-#include <stdio.h>
 #include <tchar.h>
-#include <windows.h> 
 #include <strsafe.h>
+#include <windows.h>
+#include <iostream>
+#include <exception>
+#include <string>
+#include <vector>
+
+#include "../chat-client/Paths.h"
