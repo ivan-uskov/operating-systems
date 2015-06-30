@@ -3,7 +3,7 @@
 class Pipe
 {
 public:
-    Pipe(std::wstring const& name, unsigned long buffSize = 512);
+    Pipe(std::wstring const& name, std::wstring const& userName, long buffSize = 512);
     ~Pipe();
 
 public:
@@ -27,7 +27,7 @@ private:
 
 private:
     HANDLE pipe;
-    std::wstring name;
+    std::wstring name, userName;
     unsigned long buffSize;
 };
 

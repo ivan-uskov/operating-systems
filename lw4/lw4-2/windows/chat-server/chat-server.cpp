@@ -2,6 +2,10 @@
 
 using namespace std;
 
+#define CONNECTING_STATE 0 
+#define READING_STATE 1 
+#define WRITING_STATE 2 
+#define INSTANCES 4 
 #define PIPE_TIMEOUT 5000
 #define BUFSIZE 4096
 
@@ -13,161 +17,209 @@ typedef struct
     DWORD cbRead;
     TCHAR chReply[BUFSIZE];
     DWORD cbToWrite;
+    DWORD dwState;
+    BOOL fPendingIO;
 } PIPEINST, *LPPIPEINST;
 
-VOID DisconnectAndClose(LPPIPEINST);
-BOOL CreateAndConnectInstance(LPOVERLAPPED);
-BOOL ConnectToNewClient(HANDLE, LPOVERLAPPED);
-VOID GetAnswerToRequest(LPPIPEINST);
-
-VOID WINAPI CompletedWriteRoutine(DWORD, DWORD, LPOVERLAPPED);
-VOID WINAPI CompletedReadRoutine(DWORD, DWORD, LPOVERLAPPED);
-
-HANDLE hPipe;
-
-int _tmain(VOID)
+HANDLE MyCreateEvent()
 {
-    HANDLE hConnectEvent;
-    OVERLAPPED oConnect;
-    LPPIPEINST lpPipeInst;
-    DWORD dwWait, cbRet;
-    BOOL fSuccess, fPendingIO;
+    HANDLE handle = CreateEvent(NULL, TRUE, TRUE, NULL);
 
-    hConnectEvent = CreateEvent(NULL, TRUE, TRUE, NULL);
-    if (hConnectEvent == NULL)
+    if (handle == NULL)
     {
-        printf("CreateEvent failed with %d.\n", GetLastError());
-        return 0;
+        throw runtime_error("CreateEvent failed with: " + to_string(GetLastError()));
     }
 
-    oConnect.hEvent = hConnectEvent;
-    fPendingIO = CreateAndConnectInstance(&oConnect);
-
-    while (1)
-    {
-        dwWait = WaitForSingleObjectEx(hConnectEvent, INFINITE, TRUE);
-
-        switch (dwWait)
-        {
-        case 0:
-            if (fPendingIO)
-            {
-                fSuccess = GetOverlappedResult(hPipe, &oConnect, &cbRet, FALSE);
-                if (!fSuccess)
-                {
-                    printf("ConnectNamedPipe (%d)\n", GetLastError());
-                    return 0;
-                }
-            }
-
-            lpPipeInst = (LPPIPEINST)GlobalAlloc(
-                GPTR, sizeof(PIPEINST));
-            if (lpPipeInst == NULL)
-            {
-                printf("GlobalAlloc failed (%d)\n", GetLastError());
-                return 0;
-            }
-
-            lpPipeInst->hPipeInst = hPipe;
-
-            lpPipeInst->cbToWrite = 0;
-            CompletedWriteRoutine(0, 0, (LPOVERLAPPED)lpPipeInst);
-
-            fPendingIO = CreateAndConnectInstance(&oConnect);
-            break;
-
-        case WAIT_IO_COMPLETION:
-            break;
-
-        default:
-        {
-            printf("WaitForSingleObjectEx (%d)\n", GetLastError());
-            return 0;
-        }
-        }
-    }
-    return 0;
+    return handle;
 }
 
-VOID WINAPI CompletedWriteRoutine(DWORD dwErr, DWORD cbWritten, LPOVERLAPPED lpOverLap)
-{
-    LPPIPEINST lpPipeInst;
-    BOOL fRead = FALSE;
-    lpPipeInst = (LPPIPEINST)lpOverLap;
-
-    if ((dwErr == 0) && (cbWritten == lpPipeInst->cbToWrite))
-        fRead = ReadFileEx(
-            lpPipeInst->hPipeInst,
-            lpPipeInst->chRequest,
-            BUFSIZE*sizeof(TCHAR),
-            (LPOVERLAPPED)lpPipeInst,
-            (LPOVERLAPPED_COMPLETION_ROUTINE)CompletedReadRoutine);
-
-
-    if (!fRead)
-        DisconnectAndClose(lpPipeInst);
-}
-
-VOID WINAPI CompletedReadRoutine(DWORD dwErr, DWORD cbBytesRead, LPOVERLAPPED lpOverLap)
-{
-    LPPIPEINST lpPipeInst;
-    BOOL fWrite = FALSE;
-
-    lpPipeInst = (LPPIPEINST)lpOverLap;
-
-    if ((dwErr == 0) && (cbBytesRead != 0))
-    {
-        GetAnswerToRequest(lpPipeInst);
-
-        fWrite = WriteFileEx(
-            lpPipeInst->hPipeInst,
-            lpPipeInst->chReply,
-            lpPipeInst->cbToWrite,
-            (LPOVERLAPPED)lpPipeInst,
-            (LPOVERLAPPED_COMPLETION_ROUTINE)CompletedWriteRoutine);
-    }
-
-    if (!fWrite)
-        DisconnectAndClose(lpPipeInst);
-}
-
-VOID DisconnectAndClose(LPPIPEINST lpPipeInst)
-{
-    if (!DisconnectNamedPipe(lpPipeInst->hPipeInst))
-    {
-        printf("DisconnectNamedPipe failed with %d.\n", GetLastError());
-    }
-
-    CloseHandle(lpPipeInst->hPipeInst);
-
-    if (lpPipeInst != NULL)
-        GlobalFree(lpPipeInst);
-}
-
-BOOL CreateAndConnectInstance(LPOVERLAPPED lpoOverlap)
+HANDLE MyCreateNamedPipe()
 {
     LPTSTR lpszPipename = TEXT("\\\\.\\pipe\\myserver");
 
-    hPipe = CreateNamedPipe(
+    HANDLE handle = CreateNamedPipe(
         lpszPipename,
         PIPE_ACCESS_DUPLEX |
         FILE_FLAG_OVERLAPPED,
         PIPE_TYPE_MESSAGE |
         PIPE_READMODE_MESSAGE |
         PIPE_WAIT,
-        PIPE_UNLIMITED_INSTANCES,
+        INSTANCES,
         BUFSIZE*sizeof(TCHAR),
         BUFSIZE*sizeof(TCHAR),
         PIPE_TIMEOUT,
         NULL);
 
-    if (hPipe == INVALID_HANDLE_VALUE)
+    if (handle == INVALID_HANDLE_VALUE)
     {
-        printf("CreateNamedPipe failed with %d.\n", GetLastError());
-        return 0;
+        throw runtime_error("CreateNamedPipe failed with: " + to_string(GetLastError()));
     }
 
-    return ConnectToNewClient(hPipe, lpoOverlap);
+    return handle;
+}
+
+VOID DisconnectAndReconnect(DWORD);
+BOOL ConnectToNewClient(HANDLE, LPOVERLAPPED);
+
+PIPEINST Pipe[INSTANCES];
+HANDLE hEvents[INSTANCES];
+
+int _tmain(VOID)
+{
+    DWORD cbRet, dwErr;
+    BOOL fSuccess;
+
+    for (DWORD i = 0; i < INSTANCES; ++i)
+    {
+        hEvents[i] = MyCreateEvent();
+
+        Pipe[i].oOverlap.hEvent = hEvents[i];
+
+        Pipe[i].hPipeInst = MyCreateNamedPipe();
+
+        Pipe[i].fPendingIO = ConnectToNewClient(Pipe[i].hPipeInst, &Pipe[i].oOverlap);
+
+        Pipe[i].dwState = Pipe[i].fPendingIO ? CONNECTING_STATE : READING_STATE;
+    }
+
+    while (1)
+    {
+        DWORD dwWait = WaitForMultipleObjects(INSTANCES, hEvents, FALSE, INFINITE);
+
+        DWORD i = dwWait - WAIT_OBJECT_0;
+        if (i < 0 || i >(INSTANCES - 1))
+        {
+            throw runtime_error("out of range");
+        }
+
+        if (Pipe[i].fPendingIO)
+        {
+            fSuccess = GetOverlappedResult(
+                Pipe[i].hPipeInst,
+                &Pipe[i].oOverlap,
+                &cbRet,
+                FALSE);
+
+            switch (Pipe[i].dwState)
+            {
+            case CONNECTING_STATE:
+                if (!fSuccess)
+                {
+                    throw runtime_error("Err: " + to_string(GetLastError()));
+                }
+                Pipe[i].dwState = READING_STATE;
+                break;
+
+            case READING_STATE:
+                if (!fSuccess || cbRet == 0)
+                {
+                    DisconnectAndReconnect(i);
+                    continue;
+                }
+                Pipe[i].cbRead = cbRet;
+                Pipe[i].dwState = WRITING_STATE;
+                break;
+
+            case WRITING_STATE:
+                if (!fSuccess || cbRet != Pipe[i].cbToWrite)
+                {
+                    DisconnectAndReconnect(i);
+                    continue;
+                }
+                Pipe[i].dwState = READING_STATE;
+                break;
+
+            default:
+            {
+                throw runtime_error("Invalid pipe state");
+            }
+            }
+        }
+
+        switch (Pipe[i].dwState)
+        {
+        case READING_STATE:
+            fSuccess = ReadFile(
+                Pipe[i].hPipeInst,
+                Pipe[i].chRequest,
+                BUFSIZE*sizeof(TCHAR),
+                &Pipe[i].cbRead,
+                &Pipe[i].oOverlap);
+
+            if (fSuccess && Pipe[i].cbRead != 0)
+            {
+                Pipe[i].fPendingIO = FALSE;
+                Pipe[i].dwState = WRITING_STATE;
+                continue;
+            }
+
+            dwErr = GetLastError();
+            if (!fSuccess && (dwErr == ERROR_IO_PENDING))
+            {
+                Pipe[i].fPendingIO = TRUE;
+                continue;
+            }
+
+            DisconnectAndReconnect(i);
+            break;
+
+        case WRITING_STATE:
+            Pipe[i].fPendingIO = FALSE;
+            Pipe[i].dwState = READING_STATE;
+
+            for (auto it = Pipe; it < Pipe + INSTANCES; ++it)
+            {
+                if (it == Pipe + i || it->dwState == CONNECTING_STATE) continue;
+
+                fSuccess = WriteFile(
+                    it->hPipeInst,
+                    Pipe[i].chRequest,
+                    Pipe[i].cbRead,
+                    &cbRet,
+                    &it->oOverlap);
+
+                if (fSuccess && cbRet == Pipe[i].cbRead)
+                {
+                    Pipe[i].fPendingIO = FALSE;
+                    Pipe[i].dwState = READING_STATE;
+                    continue;
+                }
+
+                dwErr = GetLastError();
+                if (!fSuccess && (dwErr == ERROR_IO_PENDING))
+                {
+                    Pipe[i].fPendingIO = TRUE;
+                    continue;
+                }
+
+                DisconnectAndReconnect(i);
+            }
+
+            break;
+
+        default:
+        {
+            printf("Invalid pipe state.\n");
+            return 0;
+        }
+        }
+    }
+
+    return 0;
+}
+
+VOID DisconnectAndReconnect(DWORD i)
+{
+    if (!DisconnectNamedPipe(Pipe[i].hPipeInst))
+    {
+        printf("DisconnectNamedPipe failed with %d.\n", GetLastError());
+    }
+
+    Pipe[i].fPendingIO = ConnectToNewClient(
+        Pipe[i].hPipeInst,
+        &Pipe[i].oOverlap);
+
+    Pipe[i].dwState = Pipe[i].fPendingIO ? CONNECTING_STATE : READING_STATE;
 }
 
 BOOL ConnectToNewClient(HANDLE hPipe, LPOVERLAPPED lpo)
@@ -184,28 +236,20 @@ BOOL ConnectToNewClient(HANDLE hPipe, LPOVERLAPPED lpo)
 
     switch (GetLastError())
     {
-        case ERROR_IO_PENDING:
-        {
-            fPendingIO = TRUE;
-            break;
-        }
-        case ERROR_PIPE_CONNECTED:
-        {
-            if (SetEvent(lpo->hEvent))
-                break;
-        }
-        default:
-        {
-            printf("ConnectNamedPipe failed with %d.\n", GetLastError());
-            return 0;
-        }
-    }
-    return fPendingIO;
-}
+    case ERROR_IO_PENDING:
+        fPendingIO = TRUE;
+        break;
 
-VOID GetAnswerToRequest(LPPIPEINST pipe)
-{
-    _tprintf(TEXT("[%d] %s\n"), pipe->hPipeInst, pipe->chRequest);
-    StringCchCopy(pipe->chReply, BUFSIZE, TEXT("Default answer from server"));
-    pipe->cbToWrite = (lstrlen(pipe->chReply) + 1)*sizeof(TCHAR);
+    case ERROR_PIPE_CONNECTED:
+        if (SetEvent(lpo->hEvent))
+            break;
+
+    default:
+    {
+        printf("ConnectNamedPipe failed with %d.\n", GetLastError());
+        return 0;
+    }
+    }
+
+    return fPendingIO;
 }

@@ -3,9 +3,10 @@
 
 using namespace std;
 
-Pipe::Pipe(wstring const& name, unsigned long buffSize)
+Pipe::Pipe(wstring const& name, wstring const& userName, long buffSize)
     : name(name)
     , buffSize(buffSize)
+    , userName(userName)
 {
 }
 
@@ -47,8 +48,9 @@ bool Pipe::ReadOnce(wstring & msg)
     return !success && GetLastError() == ERROR_MORE_DATA;
 }
 
-void Pipe::Write(wstring const& message)
+void Pipe::Write(wstring const& text)
 {
+    auto message = L"[" + userName + L"]: " + text;
     DWORD length = message.size() * sizeof(TCHAR);
     DWORD bytesWritten;
 

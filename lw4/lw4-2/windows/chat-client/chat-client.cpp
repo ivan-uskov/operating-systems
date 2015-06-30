@@ -17,11 +17,25 @@ wstring ReadMessage(wistream & in)
     return str;
 }
 
+wstring MyGetUserName(wistream & in)
+{
+    cout << "Enter your name!" << endl;
+    wstring name;
+    getline(in, name);
+    if (!in || name.empty())
+    {
+        throw runtime_error("Failed read name!");
+    }
+
+    return name;
+}
+
 int main(int argc, char *argv[])
 {
     try
     {
-        Pipe pipe(Paths::PIPE + L"myserver");
+        auto userName = MyGetUserName(wcin);
+        Pipe pipe(Paths::PIPE + Paths::SERVER_NAME, userName);
         pipe.Open();
 
         while (1)
@@ -30,7 +44,6 @@ int main(int argc, char *argv[])
             cout << "Sending message!" << endl;
             pipe.Write(message);
             cout << "Message sent!" << endl;
-            cout << "Response: ";
             wcout << pipe.Read() << endl;
         }
     }
